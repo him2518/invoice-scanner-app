@@ -1,15 +1,37 @@
 import streamlit as st
 import os
-import json
+import base64 # New library for decoding
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Invoice Scanner", page_icon="🧾")
 
-# --- 1. SMART SETUP (FIXES MALFORMED KEYS) ---
+# --- 1. SETUP GOOGLE CREDENTIALS (BASE64 METHOD) ---
 # Check if we are in the cloud
 if "google_credentials" in st.secrets:
-    # 1. Get the JSON data from secrets
-    secret_data = st.secrets["google_credentials"]["json_data"]
+    try:
+        # Get the safe string
+        encoded_key = st.secrets["google_credentials"]["encoded_key"]
+        
+        # Decode it back to the original JSON file
+        decoded_key = base64.b64decode(encoded_key).decode("utf-8")
+        
+        # Write to file
+        with open("service_account.json", "w") as f:
+            f.write(decoded_key)
+            
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
+        
+    except Exception as e:
+        st.error(f"❌ Error decoding key: {e}")
+        st.stop()
+
+# Check if we are local
+elif os.path.exists("service_account.json"):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
+
+else:
+    st.error("❌ Critical Error: Google Credentials not found.")
+    st.stop()
     
     # 2. Parse it into a Python dictionary
     try:
