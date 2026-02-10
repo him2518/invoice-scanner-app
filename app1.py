@@ -1,18 +1,25 @@
 import streamlit as st
 import os
-import re
-import requests  # New library for API calls
+import json # Import JSON library
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Invoice Scanner Pro", page_icon="🧾", layout="wide")
+st.set_page_config(page_title="Invoice Scanner", page_icon="🧾")
 
-# --- 1. SETUP GOOGLE CREDENTIALS ---
-if os.path.exists("service_account.json"):
+# --- 1. SETUP GOOGLE CREDENTIALS (CLOUD COMPATIBLE) ---
+# Check if we are in the cloud (using Secrets)
+if "google_credentials" in st.secrets:
+    # We are in the cloud! Create the file from the secret.
+    with open("service_account.json", "w") as f:
+        f.write(st.secrets["google_credentials"]["json_data"])
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
-else:
-    st.error("❌ Critical: 'service_account.json' not found.")
-    st.stop()
+    
+# Check if we are local (using the file directly)
+elif os.path.exists("service_account.json"):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
 
+else:
+    st.error("❌ Critical Error: Google Credentials not found. Please set up Secrets or add the JSON file.")
+    st.stop()
 # --- 2. IMPORT LIBRARIES SAFELY ---
 try:
     from google.cloud import vision
