@@ -1,25 +1,44 @@
 import streamlit as st
 import os
+import json
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Invoice Scanner", page_icon="🧾")
 
-# --- 1. SETUP GOOGLE CREDENTIALS (CLOUD COMPATIBLE) ---
-# This checks if we are running on Streamlit Cloud
+# --- 1. SMART SETUP (FIXES MALFORMED KEYS) ---
+# Check if we are in the cloud
 if "google_credentials" in st.secrets:
-    # We are in the cloud! Write the secret to a temporary file.
-    with open("service_account.json", "w") as f:
-        f.write(st.secrets["google_credentials"]["json_data"])
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
+    # 1. Get the JSON data from secrets
+    secret_data = st.secrets["google_credentials"]["json_data"]
+    
+    # 2. Parse it into a Python dictionary
+    try:
+        if isinstance(secret_data, str):
+            creds_dict = json.loads(secret_data)
+        else:
+            creds_dict = dict(secret_data)
+            
+        # 3. CRITICAL FIX: Repair the Private Key format
+        # The key needs real newlines (\n), but sometimes they get pasted as literals (\\n)
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
-# This checks if we are running locally on your Mac
+        # 4. Save the repaired JSON to a file
+        with open("service_account.json", "w") as f:
+            json.dump(creds_dict, f)
+            
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
+        
+    except json.JSONDecodeError:
+        st.error("❌ Error: The Secret Key in Streamlit settings is not valid JSON.")
+        st.stop()
+
+# Check if we are local
 elif os.path.exists("service_account.json"):
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
 
 else:
-    # If neither is found, stop the app
     st.error("❌ Critical Error: Google Credentials not found.")
-    st.info("If you are on Streamlit Cloud, please add your `service_account.json` content to the 'Secrets' settings.")
     st.stop()
 
 # --- 2. IMPORT LIBRARIES SAFELY ---
