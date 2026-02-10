@@ -1,6 +1,9 @@
 import streamlit as st
 import os
-import base64 # New library for decoding
+import re         # <--- This was missing!
+import requests   # Used for API calls
+import base64     # Used for decoding the key
+import json
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Invoice Scanner", page_icon="🧾")
@@ -31,7 +34,9 @@ elif os.path.exists("service_account.json"):
 
 else:
     st.error("❌ Critical Error: Google Credentials not found.")
+    st.info("If you are on Streamlit Cloud, please add 'encoded_key' to Secrets.")
     st.stop()
+
 # --- 2. IMPORT LIBRARIES SAFELY ---
 try:
     from google.cloud import vision
@@ -42,9 +47,6 @@ except ImportError as e:
 
 # --- 3. THE "TRUTH" ENGINE (API CALLS) ---
 def verify_gst_razorpay(gstin, api_key, api_secret):
-    """
-    Connects to Razorpay to check if GSTIN is real.
-    """
     url = f"https://api.razorpay.com/v1/gst/gstin/{gstin}"
     try:
         response = requests.get(url, auth=(api_key, api_secret))
@@ -53,9 +55,6 @@ def verify_gst_razorpay(gstin, api_key, api_secret):
         return {"error": str(e)}
 
 def verify_bank_razorpay(account, ifsc, api_key, api_secret):
-    """
-    Drops ₹1 (Penny Drop) to check if Bank Account exists.
-    """
     url = "https://api.razorpay.com/v1/fund_accounts/validation"
     data = {
         "account_number": account,
@@ -106,7 +105,7 @@ def extract_details(text):
     acc_match = re.search(r"(?:Account|Acc|A/c)[^0-9]*(\d{9,18})", text, re.IGNORECASE)
     data['account'] = acc_match.group(1) if acc_match else None
     
-    # Extract IFSC (New!)
+    # Extract IFSC
     ifsc_match = re.search(r"[A-Z]{4}0[A-Z0-9]{6}", text)
     data['ifsc'] = ifsc_match.group(0) if ifsc_match else None
 
@@ -169,7 +168,7 @@ if uploaded_file:
                          st.error(f"API Error: {gst_result['error']}")
                     elif gst_result.get("taxpayer_status") == "Active":
                          st.success(f"✅ GSTIN VALID & ACTIVE")
-                         st.json(gst_result) # Show full details
+                         st.json(gst_result)
                     else:
                          st.error(f"❌ GSTIN STATUS: {gst_result.get('taxpayer_status', 'Unknown')}")
                 
