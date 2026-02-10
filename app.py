@@ -1,16 +1,25 @@
 import streamlit as st
 import os
-import re
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Invoice Scanner", page_icon="🧾")
 
-# --- 1. SETUP GOOGLE CREDENTIALS ---
-# Make sure 'service_account.json' is in the same folder
-if os.path.exists("service_account.json"):
+# --- 1. SETUP GOOGLE CREDENTIALS (CLOUD COMPATIBLE) ---
+# This checks if we are running on Streamlit Cloud
+if "google_credentials" in st.secrets:
+    # We are in the cloud! Write the secret to a temporary file.
+    with open("service_account.json", "w") as f:
+        f.write(st.secrets["google_credentials"]["json_data"])
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
+
+# This checks if we are running locally on your Mac
+elif os.path.exists("service_account.json"):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
+
 else:
-    st.error("❌ Critical Error: 'service_account.json' file not found. Please add it to this folder.")
+    # If neither is found, stop the app
+    st.error("❌ Critical Error: Google Credentials not found.")
+    st.info("If you are on Streamlit Cloud, please add your `service_account.json` content to the 'Secrets' settings.")
     st.stop()
 
 # --- 2. IMPORT LIBRARIES SAFELY ---
