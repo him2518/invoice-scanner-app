@@ -47,6 +47,38 @@ def extract_text_from_file(uploaded_file):
         return f"Error: {e}"
 
 # --- 3. THE BRAIN (GEMINI AI) ---
+def get_best_model():
+    """
+    Dynamically finds a working model to prevent 404 errors.
+    """
+    try:
+        # Ask Google what models are available for this API Key
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        # Priority list (Newest & Fastest first)
+        preferences = [
+            'models/gemini-1.5-flash',
+            'models/gemini-1.5-flash-latest',
+            'models/gemini-1.5-pro',
+            'models/gemini-pro',
+            'models/gemini-1.0-pro'
+        ]
+        
+        # Pick the first preferred model that actually exists
+        for pref in preferences:
+            if pref in available_models:
+                return pref
+        
+        # Fallback: Just take the first available model if none match
+        return available_models[0] if available_models else 'models/gemini-1.5-flash'
+        
+    except Exception as e:
+        # If listing fails, fallback to standard
+        return 'models/gemini-1.5-flash'
+
 def analyze_with_gemini(text_content):
     if "gemini_api_key" not in st.secrets:
         return {"error": "Missing 'gemini_api_key' in Streamlit Secrets!"}
@@ -54,14 +86,9 @@ def analyze_with_gemini(text_content):
     api_key = st.secrets["gemini_api_key"]
     genai.configure(api_key=api_key)
     
-    # --- MODEL SELECTOR (Updated for Stability) ---
-    # We try specific versions first, then generic aliases
-    model_candidates = [
-        'models/gemini-1.5-flash',
-        'models/gemini-1.5-flash-latest',
-        'models/gemini-1.0-pro', # Very stable backup
-        'models/gemini-pro'
-    ]
+    # SMART MODEL SELECTION
+    active_model = get_best_model()
+    # st.toast(f"Using Model: {active_model}") # Optional: Debugging
     
     prompt = f"""
     You are an expert financial auditor. Extract data from this text into a JSON object.
@@ -99,25 +126,13 @@ def analyze_with_gemini(text_content):
     {text_content}
     """
     
-    last_error = ""
-    for model_name in model_candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            text = response.text.replace("```json", "").replace("```", "").strip()
-            return json.loads(text)
-        except Exception as e:
-            error_str = str(e)
-            last_error = error_str
-            # If rate limit (429), wait briefly
-            if "429" in error_str:
-                time.sleep(2)
-                continue
-            # If model not found (404), try next immediately
-            if "404" in error_str:
-                continue
-                
-    return {"error": f"All models failed. Please check requirements.txt. Last error: {last_error}"}
+    try:
+        model = genai.GenerativeModel(active_model)
+        response = model.generate_content(prompt)
+        text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(text)
+    except Exception as e:
+        return {"error": f"Model ({active_model}) failed. Error: {str(e)}"}
 
 # --- 4. AUDITOR LOGIC ---
 def audit_quotation(data):
@@ -185,7 +200,7 @@ if uploaded_file:
     # --- ONE BUTTON FOR EVERYTHING ---
     if st.button("🚀 Run Fraud & Price Check", type="primary"):
         
-        with st.spinner("👀 Reading Document & Running Audit..."):
+        with st.spinner("👀 Reading Document & Finding Best AI Model..."):
             # 1. OCR
             raw_text = extract_text_from_file(uploaded_file)
             # 2. AI Analysis
@@ -203,55 +218,8 @@ if uploaded_file:
             dealer_name = data.get('dealer_name', 'Unknown')
             city = data.get('customer_state', '')
             
-            # Fix Search URL: Handle empty or "Unknown" dealer names gracefully
+            # Smart Search Link
             if dealer_name and dealer_name.lower() != "unknown":
                 query = f"{dealer_name} {city} reviews complaints"
                 search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
                 link_markdown = f"👉 **[Click to Verify Dealer Reputation on Google]({search_url})**"
-            else:
-                link_markdown = "⚠️ *Dealer Name not detected for search.*"
-
-            # 1. TOP LEVEL SCORE
-            c1, c2, c3 = st.columns(3)
-            if score == 100:
-                c1.metric("🛡️ Trust Score", f"{score}/100", "Clean")
-            elif score > 70:
-                c1.metric("🛡️ Trust Score", f"{score}/100", "Caution", delta_color="off")
-            else:
-                c1.metric("🛡️ Trust Score", f"{score}/100", "High Risk", delta_color="inverse")
-            
-            c2.metric("Final Price", f"₹{data.get('on_road_price', 0):,}")
-            c3.metric("Dealer", dealer_name)
-
-            # 2. SPLIT VIEW: FRAUD vs AUDITOR
-            col_fraud, col_audit = st.columns(2)
-
-            with col_fraud:
-                st.subheader("🏢 Fraud Check (Identity)")
-                st.info(f"**Dealer:** {dealer_name}\n\n**Address:** {data.get('dealer_address', 'N/A')}")
-                st.write(f"**Bank Beneficiary:** {data.get('beneficiary_name', 'Not Found')}")
-                st.write(f"**Account No:** {data.get('account_number', 'N/A')}")
-                
-                if any("Mismatch" in f for f in flags):
-                    st.error("🚨 BENEFICIARY MISMATCH DETECTED")
-                else:
-                    st.success("✅ Identity looks consistent")
-                
-                st.markdown(link_markdown)
-
-            with col_audit:
-                st.subheader("💰 Auditor Check (Pricing)")
-                st.write(f"**Ex-Showroom:** ₹{data.get('ex_showroom', 0):,}")
-                st.write(f"**Insurance:** ₹{data.get('insurance', 0):,}")
-                st.write(f"**Handling Charges:** ₹{data.get('other_charges', 0):,}")
-                
-                if flags:
-                    st.error("⚠️ Audit Issues Found:")
-                    for f in flags:
-                        st.write(f)
-                else:
-                    st.success("✅ Pricing looks fair and clean.")
-
-            # 3. DETAILS EXPANDER
-            with st.expander("📄 View Full Extracted Details"):
-                st.json(data)
