@@ -3,7 +3,7 @@ import os
 import json
 import base64
 import time
-import urllib.parse  # Added for Google Search Link
+import urllib.parse
 import google.generativeai as genai
 from google.cloud import vision
 import fitz  # PyMuPDF
@@ -62,7 +62,7 @@ def analyze_with_gemini(text_content):
         'models/gemini-pro'
     ]
     
-    # --- UPDATED PROMPT WITH NEW FIELDS ---
+    # --- PROMPT WITH ALL FIELDS ---
     prompt = f"""
     You are an expert financial auditor. Extract data from this text into a JSON object.
     
@@ -120,7 +120,7 @@ def analyze_with_gemini(text_content):
                 
     return {"error": f"All models failed. Last error: {last_error}"}
 
-# --- 4. NEW AUDITOR LOGIC ---
+# --- 4. AUDITOR LOGIC ---
 def audit_quotation(data):
     """Checks for overpricing and fraud indicators."""
     warnings = []
@@ -186,4 +186,66 @@ if uploaded_file:
             st.error("Analysis Failed")
             st.code(data['error'])
         else:
-            # --- DISPLAY AUDITOR RESULTS FIRST
+            # --- DISPLAY AUDITOR RESULTS FIRST ---
+            st.header("🛡️ Audit & Verification")
+            
+            # Dealer Identity & Google Check
+            col_a, col_b = st.columns(2)
+            dealer_name = data.get('dealer_name', 'Unknown')
+            city = data.get('customer_state', '')
+            
+            # Create Google Search Link
+            query = f"{dealer_name} {city} reviews complaints"
+            search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+            
+            with col_a:
+                st.subheader("🏢 Dealer Details")
+                st.write(f"**Name:** {dealer_name}")
+                st.write(f"**Address:** {data.get('dealer_address', 'N/A')}")
+                st.write(f"**Contact:** {data.get('dealer_phone', 'N/A')} | {data.get('dealer_email', 'N/A')}")
+                st.markdown(f"⭐ **[Check Dealer Rating & Reviews on Google]({search_url})**")
+
+            with col_b:
+                st.subheader("🏦 Bank Info")
+                st.write(f"**Bank:** {data.get('bank_name', 'N/A')}")
+                st.write(f"**Account:** {data.get('account_number', 'N/A')}")
+                st.write(f"**IFSC:** {data.get('ifsc_code', 'N/A')}")
+                st.caption(f"Beneficiary Name: {data.get('beneficiary_name', 'N/A')}")
+
+            st.divider()
+
+            # --- DISPLAY FINANCIALS ---
+            st.success(f"✅ Detected: {data.get('document_type', 'Unknown')}")
+            
+            if data.get("document_type") == "CAR_QUOTATION":
+                # Run Audit Logic
+                flags, score = audit_quotation(data)
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Trust Score", f"{score}/100")
+                c2.metric("On-Road Price", f"₹{data.get('on_road_price', 0):,}")
+                c3.metric("Ex-Showroom", f"₹{data.get('ex_showroom', 0):,}")
+                
+                if flags:
+                    st.error("🚨 Red Flags Detected:")
+                    for f in flags: st.write(f)
+                else:
+                    st.info("✅ No major pricing errors found.")
+
+                st.subheader("📋 Detailed Breakdown")
+                tab1, tab2 = st.tabs(["Cost Breakdown", "Document Info"])
+                
+                with tab1:
+                    st.json(data)
+                with tab2:
+                    st.write(f"**Invoice No:** {data.get('invoice_number')}")
+                    st.write(f"**Date:** {data.get('invoice_date')}")
+                    st.write(f"**Terms:** {data.get('terms_summary')}")
+                
+            elif data.get("document_type") == "GST_INVOICE":
+                c1, c2 = st.columns(2)
+                c1.metric("GSTIN", data.get("gstin", "N/A"))
+                c2.metric("Total", f"₹{data.get('total_amount', 0):,}")
+                st.json(data)
+            else:
+                st.write(data)
