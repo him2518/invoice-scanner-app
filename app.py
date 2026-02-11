@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import json
 import base64
-import requests
+import time
 import google.generativeai as genai
 from google.cloud import vision
 import fitz  # PyMuPDF
@@ -45,13 +45,19 @@ def extract_text_from_file(uploaded_file):
     except Exception as e:
         return f"Error: {e}"
 
-# --- 3. THE BRAIN (GEMINI AI) ---
+# --- 3. THE BRAIN (GEMINI AI - SELF HEALING) ---
 def analyze_with_gemini(text_content, api_key):
     genai.configure(api_key=api_key)
     
-    # UPDATED MODEL NAME BASED ON YOUR LOGS
-     
-    model_name = 'models/gemini-1.5-flash'
+    # LIST OF MODELS TO TRY (In order of preference)
+    # 1. flash-latest (Standard alias)
+    # 2. flash-lite (Often has better quotas)
+    # 3. pro-latest (Stable fallback)
+    model_candidates = [
+        'models/gemini-flash-latest',
+        'models/gemini-2.0-flash-lite-001',
+        'models/gemini-pro-latest'
+    ]
     
     prompt = f"""
     You are an expert financial document analyzer. Extract data from this text into a JSON object.
@@ -76,14 +82,34 @@ def analyze_with_gemini(text_content, api_key):
     {text_content}
     """
     
-    try:
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
-        text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text)
-        
-    except Exception as e:
-        return {"error": f"Model Error ({model_name}): {str(e)}"}
+    # Loop through models until one works
+    last_error = ""
+    
+    for model_name in model_candidates:
+        try:
+            # print(f"Trying model: {model_name}...") # Debugging
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            
+            # If successful, parse and return
+            text = response.text.replace("```json", "").replace("```", "").strip()
+            return json.loads(text)
+            
+        except Exception as e:
+            error_str = str(e)
+            last_error = error_str
+            
+            # If Rate Limit (429), wait a bit before trying next model
+            if "429" in error_str:
+                time.sleep(2) # Short pause
+                continue # Try next model
+            
+            # If 404 (Not Found), just try next model immediately
+            if "404" in error_str:
+                continue
+                
+    # If all models fail, return the last error
+    return {"error": f"All models failed. Last error: {last_error}"}
 
 # --- 4. UI LAYOUT ---
 st.title("🧠 Smart Document Analyzer")
@@ -109,11 +135,12 @@ if uploaded_file and gemini_key:
         with st.spinner("👀 Reading text..."):
             raw_text = extract_text_from_file(uploaded_file)
         
-        with st.spinner("🧠 Gemini is analyzing..."):
+        with st.spinner("🧠 Gemini is thinking (Trying multiple models)..."):
             data = analyze_with_gemini(raw_text, gemini_key)
         
         if "error" in data:
             st.error("Analysis Failed")
+            st.warning("Tip: If you see a 429 error, it means the free quota is full. Wait 1 minute and try again.")
             st.code(data['error'])
         else:
             st.success(f"✅ Detected: {data.get('document_type', 'Unknown')}")
