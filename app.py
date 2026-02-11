@@ -10,7 +10,7 @@ import fitz  # PyMuPDF
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Smart Doc Analyzer", page_icon="🧠", layout="wide")
 
-# --- 1. SETUP CREDENTIALS ---
+# --- 1. SETUP CREDENTIALS (OCR) ---
 if "google_credentials" in st.secrets:
     try:
         encoded_key = st.secrets["google_credentials"]["encoded_key"]
@@ -46,17 +46,20 @@ def extract_text_from_file(uploaded_file):
         return f"Error: {e}"
 
 # --- 3. THE BRAIN (GEMINI AI - SELF HEALING) ---
-def analyze_with_gemini(text_content, api_key):
+def analyze_with_gemini(text_content):
+    # GET KEY FROM SECRETS
+    if "gemini_api_key" not in st.secrets:
+        return {"error": "Missing 'gemini_api_key' in Streamlit Secrets!"}
+    
+    api_key = st.secrets["gemini_api_key"]
     genai.configure(api_key=api_key)
     
     # LIST OF MODELS TO TRY (In order of preference)
-    # 1. flash-latest (Standard alias)
-    # 2. flash-lite (Often has better quotas)
-    # 3. pro-latest (Stable fallback)
+    # We try newer models first, then fall back to older reliable ones
     model_candidates = [
-        'models/gemini-flash-latest',
-        'models/gemini-2.0-flash-lite-001',
-        'models/gemini-pro-latest'
+        'models/gemini-2.0-flash',
+        'models/gemini-1.5-flash',
+        'models/gemini-pro'
     ]
     
     prompt = f"""
@@ -82,70 +85,60 @@ def analyze_with_gemini(text_content, api_key):
     {text_content}
     """
     
-    # Loop through models until one works
     last_error = ""
     
     for model_name in model_candidates:
         try:
-            # print(f"Trying model: {model_name}...") # Debugging
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt)
-            
-            # If successful, parse and return
             text = response.text.replace("```json", "").replace("```", "").strip()
             return json.loads(text)
             
         except Exception as e:
             error_str = str(e)
             last_error = error_str
-            
-            # If Rate Limit (429), wait a bit before trying next model
+            # If rate limit, wait briefly then try next model
             if "429" in error_str:
-                time.sleep(2) # Short pause
-                continue # Try next model
-            
-            # If 404 (Not Found), just try next model immediately
+                time.sleep(1)
+                continue
+            # If model not found, try next model immediately
             if "404" in error_str:
                 continue
                 
-    # If all models fail, return the last error
     return {"error": f"All models failed. Last error: {last_error}"}
 
 # --- 4. UI LAYOUT ---
 st.title("🧠 Smart Document Analyzer")
 st.write("Upload a **Car Quotation** or **Invoice**.")
 
-# Sidebar
+# Sidebar (Only for Razorpay now)
 with st.sidebar:
-    st.header("🔑 API Keys")
     if "gemini_api_key" in st.secrets:
-        gemini_key = st.secrets["gemini_api_key"]
-        st.success("✅ Gemini Key Loaded")
+        st.success(f"✅ Gemini Key Loaded from Secrets")
     else:
-        gemini_key = st.text_input("Gemini API Key", type="password")
-
+        st.error("⚠️ Gemini Key MISSING in Secrets")
+        
     st.divider()
+    st.header("🔐 Other Keys")
     razor_key = st.text_input("Razorpay Key ID", type="password")
     razor_secret = st.text_input("Razorpay Secret", type="password")
 
 uploaded_file = st.file_uploader("Upload Document", type=["pdf", "jpg", "png", "jpeg"])
 
-if uploaded_file and gemini_key:
+if uploaded_file:
     if st.button("🚀 Analyze Document"):
         with st.spinner("👀 Reading text..."):
             raw_text = extract_text_from_file(uploaded_file)
         
-        with st.spinner("🧠 Gemini is thinking (Trying multiple models)..."):
-            data = analyze_with_gemini(raw_text, gemini_key)
+        with st.spinner("🧠 Gemini is thinking..."):
+            data = analyze_with_gemini(raw_text)
         
         if "error" in data:
             st.error("Analysis Failed")
-            st.warning("Tip: If you see a 429 error, it means the free quota is full. Wait 1 minute and try again.")
             st.code(data['error'])
         else:
             st.success(f"✅ Detected: {data.get('document_type', 'Unknown')}")
             
-            # Show Data
             if data.get("document_type") == "CAR_QUOTATION":
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Ex-Showroom", f"₹{data.get('ex_showroom', 0):,}")
@@ -162,6 +155,3 @@ if uploaded_file and gemini_key:
                 st.json(data)
             else:
                 st.write(data)
-
-elif not gemini_key:
-    st.info("👈 Enter Gemini API Key in sidebar")
