@@ -47,38 +47,6 @@ def extract_text_from_file(uploaded_file):
         return f"Error: {e}"
 
 # --- 3. THE BRAIN (GEMINI AI) ---
-def get_best_model():
-    """
-    Dynamically finds a working model to prevent 404 errors.
-    """
-    try:
-        # Ask Google what models are available for this API Key
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        
-        # Priority list (Newest & Fastest first)
-        preferences = [
-            'models/gemini-1.5-flash',
-            'models/gemini-1.5-flash-latest',
-            'models/gemini-1.5-pro',
-            'models/gemini-pro',
-            'models/gemini-1.0-pro'
-        ]
-        
-        # Pick the first preferred model that actually exists
-        for pref in preferences:
-            if pref in available_models:
-                return pref
-        
-        # Fallback: Just take the first available model if none match
-        return available_models[0] if available_models else 'models/gemini-1.5-flash'
-        
-    except Exception as e:
-        # If listing fails, fallback to standard
-        return 'models/gemini-1.5-flash'
-
 def analyze_with_gemini(text_content):
     if "gemini_api_key" not in st.secrets:
         return {"error": "Missing 'gemini_api_key' in Streamlit Secrets!"}
@@ -86,9 +54,8 @@ def analyze_with_gemini(text_content):
     api_key = st.secrets["gemini_api_key"]
     genai.configure(api_key=api_key)
     
-    # SMART MODEL SELECTION
-    active_model = get_best_model()
-    # st.toast(f"Using Model: {active_model}") # Optional: Debugging
+    # Try multiple models (Self-Healing)
+    model_candidates = ['models/gemini-2.0-flash', 'models/gemini-1.5-flash', 'models/gemini-pro']
     
     prompt = f"""
     You are an expert financial auditor. Extract data from this text into a JSON object.
@@ -126,13 +93,23 @@ def analyze_with_gemini(text_content):
     {text_content}
     """
     
-    try:
-        model = genai.GenerativeModel(active_model)
-        response = model.generate_content(prompt)
-        text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text)
-    except Exception as e:
-        return {"error": f"Model ({active_model}) failed. Error: {str(e)}"}
+    last_error = ""
+    for model_name in model_candidates:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            text = response.text.replace("```json", "").replace("```", "").strip()
+            return json.loads(text)
+        except Exception as e:
+            error_str = str(e)
+            last_error = error_str
+            if "429" in error_str:
+                time.sleep(1)
+                continue
+            if "404" in error_str:
+                continue
+                
+    return {"error": f"All models failed. Last error: {last_error}"}
 
 # --- 4. AUDITOR LOGIC ---
 def audit_quotation(data):
@@ -140,25 +117,15 @@ def audit_quotation(data):
     warnings = []
     trust_score = 100
     
-    # Helper to safely get float values
-    def get_val(key):
-        val = data.get(key)
-        try:
-            return float(str(val).replace(",", "")) if val else 0.0
-        except:
-            return 0.0
-
-    other = get_val('other_charges')
-    ex_price = get_val('ex_showroom')
-    ins = get_val('insurance')
-    tcs = get_val('tcs')
-    
     # 1. Handling Charges Check
+    other = data.get('other_charges', 0)
     if other > 1500:
         warnings.append(f"🚩 **High Handling Charges:** ₹{other}. Courts often rule these illegal.")
         trust_score -= 20
 
     # 2. Insurance Markup Check
+    ex_price = data.get('ex_showroom', 0)
+    ins = data.get('insurance', 0)
     if ex_price > 0:
         ratio = (ins / ex_price) * 100
         if ratio > 5.0:
@@ -166,6 +133,7 @@ def audit_quotation(data):
             trust_score -= 15
 
     # 3. TCS Rule Check
+    tcs = data.get('tcs', 0)
     if ex_price < 990000 and tcs > 0:
         warnings.append(f"🚩 **TCS Error:** Tax charged on car < ₹10 Lakhs.")
         trust_score -= 10
@@ -175,7 +143,7 @@ def audit_quotation(data):
     beneficiary = str(data.get('beneficiary_name', '')).lower()
     if len(dealer) > 3 and len(beneficiary) > 3:
         if dealer[:4] not in beneficiary and beneficiary[:4] not in dealer:
-            warnings.append(f"🚨 **Name Mismatch:** Dealer is '{data.get('dealer_name')}' but Bank Account is '{data.get('beneficiary_name')}'.")
+            warnings.append(f"🚨 **Name Mismatch:** Dealer is '{data['dealer_name']}' but Bank Account is '{data['beneficiary_name']}'.")
             trust_score -= 30
 
     return warnings, max(0, trust_score)
@@ -200,7 +168,7 @@ if uploaded_file:
     # --- ONE BUTTON FOR EVERYTHING ---
     if st.button("🚀 Run Fraud & Price Check", type="primary"):
         
-        with st.spinner("👀 Reading Document & Finding Best AI Model..."):
+        with st.spinner("👀 Reading Document & Running Audit..."):
             # 1. OCR
             raw_text = extract_text_from_file(uploaded_file)
             # 2. AI Analysis
@@ -217,9 +185,50 @@ if uploaded_file:
             flags, score = audit_quotation(data)
             dealer_name = data.get('dealer_name', 'Unknown')
             city = data.get('customer_state', '')
+            query = f"{dealer_name} {city} reviews complaints"
+            search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+
+            # 1. TOP LEVEL SCORE
+            c1, c2, c3 = st.columns(3)
+            if score == 100:
+                c1.metric("🛡️ Trust Score", f"{score}/100", "Clean")
+            elif score > 70:
+                c1.metric("🛡️ Trust Score", f"{score}/100", "Caution", delta_color="off")
+            else:
+                c1.metric("🛡️ Trust Score", f"{score}/100", "High Risk", delta_color="inverse")
             
-            # Smart Search Link
-            if dealer_name and dealer_name.lower() != "unknown":
-                query = f"{dealer_name} {city} reviews complaints"
-                search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
-                link_markdown = f"👉 **[Click to Verify Dealer Reputation on Google]({search_url})**"
+            c2.metric("Final Price", f"₹{data.get('on_road_price', 0):,}")
+            c3.metric("Dealer", dealer_name)
+
+            # 2. SPLIT VIEW: FRAUD vs AUDITOR
+            col_fraud, col_audit = st.columns(2)
+
+            with col_fraud:
+                st.subheader("🏢 Fraud Check (Identity)")
+                st.info(f"**Dealer:** {dealer_name}\n\n**Address:** {data.get('dealer_address', 'N/A')}")
+                st.write(f"**Bank Beneficiary:** {data.get('beneficiary_name', 'Not Found')}")
+                st.write(f"**Account No:** {data.get('account_number', 'N/A')}")
+                
+                if "Mismatch" in str(flags):
+                    st.error("🚨 BENEFICIARY MISMATCH DETECTED")
+                else:
+                    st.success("✅ Identity looks consistent")
+                
+                st.markdown(f"👉 **[Click to Verify Dealer Reputation on Google]({search_url})**")
+
+            with col_audit:
+                st.subheader("💰 Auditor Check (Pricing)")
+                st.write(f"**Ex-Showroom:** ₹{data.get('ex_showroom', 0):,}")
+                st.write(f"**Insurance:** ₹{data.get('insurance', 0):,}")
+                st.write(f"**Handling Charges:** ₹{data.get('other_charges', 0):,}")
+                
+                if flags:
+                    st.error("⚠️ Audit Issues Found:")
+                    for f in flags:
+                        st.write(f)
+                else:
+                    st.success("✅ Pricing looks fair and clean.")
+
+            # 3. DETAILS EXPANDER
+            with st.expander("📄 View Full Extracted Details"):
+                st.json(data)
