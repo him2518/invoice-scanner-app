@@ -2,4 +2,4 @@ streamlit
 google-cloud-vision
 pymupdf
 requests
-google-generativeai
+google-generativeai>=0.7.2
