@@ -9,7 +9,7 @@ from google.cloud import vision
 import fitz  # PyMuPDF
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Smart Doc Analyzer", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="Auto-Auditor Pro", page_icon="🕵️", layout="wide")
 
 # --- 1. SETUP CREDENTIALS (OCR) ---
 if "google_credentials" in st.secrets:
@@ -48,21 +48,15 @@ def extract_text_from_file(uploaded_file):
 
 # --- 3. THE BRAIN (GEMINI AI) ---
 def analyze_with_gemini(text_content):
-    # GET KEY FROM SECRETS
     if "gemini_api_key" not in st.secrets:
         return {"error": "Missing 'gemini_api_key' in Streamlit Secrets!"}
     
     api_key = st.secrets["gemini_api_key"]
     genai.configure(api_key=api_key)
     
-    # LIST OF MODELS TO TRY
-    model_candidates = [
-        'models/gemini-2.0-flash',
-        'models/gemini-1.5-flash',
-        'models/gemini-pro'
-    ]
+    # Try multiple models (Self-Healing)
+    model_candidates = ['models/gemini-2.0-flash', 'models/gemini-1.5-flash', 'models/gemini-pro']
     
-    # --- PROMPT WITH ALL FIELDS ---
     prompt = f"""
     You are an expert financial auditor. Extract data from this text into a JSON object.
     
@@ -72,25 +66,23 @@ def analyze_with_gemini(text_content):
        - "dealer_phone": (Phone/Mobile)
        - "dealer_email": (Email)
     
-    2. **Invoice Details:**
-       - "invoice_number", "invoice_date", "customer_name"
-    
-    3. **Bank Details (For Fraud Check):**
+    2. **Bank Details (For Fraud Check):**
        - "bank_name", "account_number", "ifsc_code"
        - "beneficiary_name" (Name on the bank account - Vital for fraud check)
     
-    4. **Terms:**
-       - "terms_summary": (Summarize cancellation/refund policy in 1 sentence)
+    3. **Invoice Details:**
+       - "invoice_number", "invoice_date", "customer_name"
+       - "terms_summary" (Refund/Cancellation policy)
 
-    5. **Financials (Car Quotation):**
+    4. **Financials (Car Quotation):**
        - "document_type": "CAR_QUOTATION"
        - "ex_showroom", "tcs", "life_tax", "insurance", "extended_warranty"
        - "accessories", "fastag", "vas", "temp_reg", "other_charges", "on_road_price"
        - "car_model", "customer_state"
     
-    6. **Financials (GST Invoice):**
+    5. **Financials (GST Invoice):**
        - "document_type": "GST_INVOICE"
-       - "gstin", "total_amount", "cgst_amount", "sgst_amount", "igst_amount"
+       - "gstin", "total_amount"
     
     Rules:
     - Return ONLY valid JSON.
@@ -108,7 +100,6 @@ def analyze_with_gemini(text_content):
             response = model.generate_content(prompt)
             text = response.text.replace("```json", "").replace("```", "").strip()
             return json.loads(text)
-            
         except Exception as e:
             error_str = str(e)
             last_error = error_str
@@ -129,7 +120,7 @@ def audit_quotation(data):
     # 1. Handling Charges Check
     other = data.get('other_charges', 0)
     if other > 1500:
-        warnings.append(f"🚩 **High Handling Charges:** ₹{other}. Ask for waiver.")
+        warnings.append(f"🚩 **High Handling Charges:** ₹{other}. Courts often rule these illegal.")
         trust_score -= 20
 
     # 2. Insurance Markup Check
@@ -152,100 +143,92 @@ def audit_quotation(data):
     beneficiary = str(data.get('beneficiary_name', '')).lower()
     if len(dealer) > 3 and len(beneficiary) > 3:
         if dealer[:4] not in beneficiary and beneficiary[:4] not in dealer:
-            warnings.append(f"🚨 **Name Mismatch:** Dealer is '{data['dealer_name']}' but Bank Account is '{data['beneficiary_name']}'. Verify!")
+            warnings.append(f"🚨 **Name Mismatch:** Dealer is '{data['dealer_name']}' but Bank Account is '{data['beneficiary_name']}'.")
             trust_score -= 30
 
     return warnings, max(0, trust_score)
 
 # --- 5. UI LAYOUT ---
-st.title("🧠 Smart Document Analyzer & Auditor")
-st.write("Upload a **Car Quotation** or **Invoice**.")
+st.title("🕵️ Auto-Auditor: Fraud & Price Check")
+st.markdown("Upload a document to verify the **Dealer** (Fraud Check) and the **Price** (Auditor Check).")
 
 with st.sidebar:
     if "gemini_api_key" in st.secrets:
         st.success(f"✅ Gemini Key Loaded")
     else:
         st.error("⚠️ Gemini Key MISSING")
-        
+    
     st.divider()
-    st.header("🔐 Other Keys")
     razor_key = st.text_input("Razorpay Key ID", type="password")
     razor_secret = st.text_input("Razorpay Secret", type="password")
 
-uploaded_file = st.file_uploader("Upload Document", type=["pdf", "jpg", "png", "jpeg"])
+uploaded_file = st.file_uploader("Upload Quotation / Invoice", type=["pdf", "jpg", "png"])
 
 if uploaded_file:
-    if st.button("🚀 Analyze & Audit"):
-        with st.spinner("👀 Reading text..."):
-            raw_text = extract_text_from_file(uploaded_file)
+    # --- ONE BUTTON FOR EVERYTHING ---
+    if st.button("🚀 Run Fraud & Price Check", type="primary"):
         
-        with st.spinner("🧠 AI is analyzing & auditing..."):
+        with st.spinner("👀 Reading Document & Running Audit..."):
+            # 1. OCR
+            raw_text = extract_text_from_file(uploaded_file)
+            # 2. AI Analysis
             data = analyze_with_gemini(raw_text)
         
         if "error" in data:
             st.error("Analysis Failed")
             st.code(data['error'])
         else:
-            # --- DISPLAY AUDITOR RESULTS FIRST ---
-            st.header("🛡️ Audit & Verification")
+            # --- RESULTS DASHBOARD ---
+            st.divider()
             
-            # Dealer Identity & Google Check
-            col_a, col_b = st.columns(2)
+            # Prepare Data
+            flags, score = audit_quotation(data)
             dealer_name = data.get('dealer_name', 'Unknown')
             city = data.get('customer_state', '')
-            
-            # Create Google Search Link
             query = f"{dealer_name} {city} reviews complaints"
             search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+
+            # 1. TOP LEVEL SCORE
+            c1, c2, c3 = st.columns(3)
+            if score == 100:
+                c1.metric("🛡️ Trust Score", f"{score}/100", "Clean")
+            elif score > 70:
+                c1.metric("🛡️ Trust Score", f"{score}/100", "Caution", delta_color="off")
+            else:
+                c1.metric("🛡️ Trust Score", f"{score}/100", "High Risk", delta_color="inverse")
             
-            with col_a:
-                st.subheader("🏢 Dealer Details")
-                st.write(f"**Name:** {dealer_name}")
-                st.write(f"**Address:** {data.get('dealer_address', 'N/A')}")
-                st.write(f"**Contact:** {data.get('dealer_phone', 'N/A')} | {data.get('dealer_email', 'N/A')}")
-                st.markdown(f"⭐ **[Check Dealer Rating & Reviews on Google]({search_url})**")
+            c2.metric("Final Price", f"₹{data.get('on_road_price', 0):,}")
+            c3.metric("Dealer", dealer_name)
 
-            with col_b:
-                st.subheader("🏦 Bank Info")
-                st.write(f"**Bank:** {data.get('bank_name', 'N/A')}")
-                st.write(f"**Account:** {data.get('account_number', 'N/A')}")
-                st.write(f"**IFSC:** {data.get('ifsc_code', 'N/A')}")
-                st.caption(f"Beneficiary Name: {data.get('beneficiary_name', 'N/A')}")
+            # 2. SPLIT VIEW: FRAUD vs AUDITOR
+            col_fraud, col_audit = st.columns(2)
 
-            st.divider()
-
-            # --- DISPLAY FINANCIALS ---
-            st.success(f"✅ Detected: {data.get('document_type', 'Unknown')}")
-            
-            if data.get("document_type") == "CAR_QUOTATION":
-                # Run Audit Logic
-                flags, score = audit_quotation(data)
+            with col_fraud:
+                st.subheader("🏢 Fraud Check (Identity)")
+                st.info(f"**Dealer:** {dealer_name}\n\n**Address:** {data.get('dealer_address', 'N/A')}")
+                st.write(f"**Bank Beneficiary:** {data.get('beneficiary_name', 'Not Found')}")
+                st.write(f"**Account No:** {data.get('account_number', 'N/A')}")
                 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Trust Score", f"{score}/100")
-                c2.metric("On-Road Price", f"₹{data.get('on_road_price', 0):,}")
-                c3.metric("Ex-Showroom", f"₹{data.get('ex_showroom', 0):,}")
+                if "Mismatch" in str(flags):
+                    st.error("🚨 BENEFICIARY MISMATCH DETECTED")
+                else:
+                    st.success("✅ Identity looks consistent")
+                
+                st.markdown(f"👉 **[Click to Verify Dealer Reputation on Google]({search_url})**")
+
+            with col_audit:
+                st.subheader("💰 Auditor Check (Pricing)")
+                st.write(f"**Ex-Showroom:** ₹{data.get('ex_showroom', 0):,}")
+                st.write(f"**Insurance:** ₹{data.get('insurance', 0):,}")
+                st.write(f"**Handling Charges:** ₹{data.get('other_charges', 0):,}")
                 
                 if flags:
-                    st.error("🚨 Red Flags Detected:")
-                    for f in flags: st.write(f)
+                    st.error("⚠️ Audit Issues Found:")
+                    for f in flags:
+                        st.write(f)
                 else:
-                    st.info("✅ No major pricing errors found.")
+                    st.success("✅ Pricing looks fair and clean.")
 
-                st.subheader("📋 Detailed Breakdown")
-                tab1, tab2 = st.tabs(["Cost Breakdown", "Document Info"])
-                
-                with tab1:
-                    st.json(data)
-                with tab2:
-                    st.write(f"**Invoice No:** {data.get('invoice_number')}")
-                    st.write(f"**Date:** {data.get('invoice_date')}")
-                    st.write(f"**Terms:** {data.get('terms_summary')}")
-                
-            elif data.get("document_type") == "GST_INVOICE":
-                c1, c2 = st.columns(2)
-                c1.metric("GSTIN", data.get("gstin", "N/A"))
-                c2.metric("Total", f"₹{data.get('total_amount', 0):,}")
+            # 3. DETAILS EXPANDER
+            with st.expander("📄 View Full Extracted Details"):
                 st.json(data)
-            else:
-                st.write(data)
