@@ -49,10 +49,9 @@ def extract_text_from_file(uploaded_file):
 def analyze_with_gemini(text_content, api_key):
     genai.configure(api_key=api_key)
     
-    # 1. Try the Latest Flash Model
-    model_name = 'gemini-1.5-flash'
+    # 1. Use the Stable "Gemini Pro" Model (Available Everywhere)
+    model = genai.GenerativeModel('gemini-pro')
     
-    # PROMPT
     prompt = f"""
     You are an expert financial document analyzer. Extract data from this text into a JSON object.
     
@@ -77,22 +76,20 @@ def analyze_with_gemini(text_content, api_key):
     """
     
     try:
-        # Try Flash Model First
-        model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
         
     except Exception as e:
-        # If Flash fails (404 error), Fallback to Pro
+        # DIAGNOSTIC: If this fails, list what models ARE available
+        error_msg = f"Gemini Pro Failed: {str(e)}"
         try:
-            # Fallback to standard Gemini Pro
-            model = genai.GenerativeModel('gemini-pro') 
-            response = model.generate_content(prompt)
-            text = response.text.replace("```json", "").replace("```", "").strip()
-            return json.loads(text)
-        except Exception as e2:
-            return {"error": f"Both models failed. Error: {str(e)}"}
+            st.warning("⚠️ Fetching available model list for debugging...")
+            available_models = [m.name for m in genai.list_models()]
+            error_msg += f"\n\nAVAILABLE MODELS FOR YOUR KEY: {available_models}"
+        except:
+            pass
+        return {"error": error_msg}
 
 # --- 4. UI LAYOUT ---
 st.title("🧠 Smart Document Analyzer")
@@ -122,7 +119,8 @@ if uploaded_file and gemini_key:
             data = analyze_with_gemini(raw_text, gemini_key)
         
         if "error" in data:
-            st.error(f"Analysis Failed: {data['error']}")
+            st.error("Analysis Failed")
+            st.code(data['error']) # Show the detailed error + model list
         else:
             st.success(f"✅ Detected: {data.get('document_type', 'Unknown')}")
             
@@ -134,7 +132,7 @@ if uploaded_file and gemini_key:
                 c3.metric("On-Road Price", f"₹{data.get('on_road_price', 0):,}")
                 
                 st.subheader("Breakdown")
-                st.json(data) # Showing JSON for simplicity and accuracy
+                st.json(data)
                 
             elif data.get("document_type") == "GST_INVOICE":
                 c1, c2 = st.columns(2)
