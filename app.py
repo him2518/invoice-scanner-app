@@ -1,40 +1,29 @@
 import streamlit as st
 import os
-import re         # <--- This was missing!
-import requests   # Used for API calls
-import base64     # Used for decoding the key
+import re
+import requests
+import base64
 import json
+import difflib # <-- NEW: The "Fuzzy" Logic Library
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Invoice Scanner", page_icon="🧾")
+st.set_page_config(page_title="Super Scanner (Invoice + Car)", page_icon="🚗")
 
 # --- 1. SETUP GOOGLE CREDENTIALS (BASE64 METHOD) ---
-# Check if we are in the cloud
 if "google_credentials" in st.secrets:
     try:
-        # Get the safe string
         encoded_key = st.secrets["google_credentials"]["encoded_key"]
-        
-        # Decode it back to the original JSON file
         decoded_key = base64.b64decode(encoded_key).decode("utf-8")
-        
-        # Write to file
         with open("service_account.json", "w") as f:
             f.write(decoded_key)
-            
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
-        
     except Exception as e:
         st.error(f"❌ Error decoding key: {e}")
         st.stop()
-
-# Check if we are local
 elif os.path.exists("service_account.json"):
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
-
 else:
-    st.error("❌ Critical Error: Google Credentials not found.")
-    st.info("If you are on Streamlit Cloud, please add 'encoded_key' to Secrets.")
+    st.error("❌ Critical: Google Credentials not found.")
     st.stop()
 
 # --- 2. IMPORT LIBRARIES SAFELY ---
@@ -45,37 +34,7 @@ except ImportError as e:
     st.error(f"❌ Missing Library: {e}")
     st.stop()
 
-# --- 3. THE "TRUTH" ENGINE (API CALLS) ---
-def verify_gst_razorpay(gstin, api_key, api_secret):
-    url = f"https://api.razorpay.com/v1/gst/gstin/{gstin}"
-    try:
-        response = requests.get(url, auth=(api_key, api_secret))
-        return response.json()
-    except Exception as e:
-        return {"error": str(e)}
-
-def verify_bank_razorpay(account, ifsc, api_key, api_secret):
-    url = "https://api.razorpay.com/v1/fund_accounts/validation"
-    data = {
-        "account_number": account,
-        "fund_account": {
-            "account_type": "bank_account",
-            "bank_account": {
-                "name": "Merchant",
-                "ifsc": ifsc,
-                "account_number": account
-            }
-        },
-        "amount": 100, # 100 paise = ₹1
-        "currency": "INR"
-    }
-    try:
-        response = requests.post(url, json=data, auth=(api_key, api_secret))
-        return response.json()
-    except Exception as e:
-        return {"error": str(e)}
-
-# --- 4. THE "EYES" ENGINE (OCR) ---
+# --- 3. OCR ENGINE ---
 def get_text_from_file(uploaded_file):
     client = vision.ImageAnnotatorClient()
     content = uploaded_file.getvalue()
@@ -90,26 +49,77 @@ def get_text_from_file(uploaded_file):
     else:
         image = vision.Image(content=content)
     
+    # DOCUMENT_TEXT_DETECTION is best for handwriting
     response = client.document_text_detection(image=image)
     return response.full_text_annotation.text
 
-# --- 5. THE "BRAIN" ENGINE (EXTRACTION) ---
-def extract_details(text):
+# --- 4. SMART EXTRACTION LOGIC ---
+
+def smart_parse_car_quotation(text):
+    """
+    Extracts car fields using Synonyms & Context Mapping.
+    """
     data = {}
     
-    # Extract GSTIN
+    # A. The "Dictionary" of Contexts
+    # We map Standard Fields to MANY possible variations (Handwritten or Printed)
+    context_map = {
+        'ex_showroom': ["Ex-Showroom", "Basic Price", "Unit Cost", "Vehicle Cost", "Showroom Price"],
+        'tcs': ["TCS", "Tax Collected", "T.C.S", "1% Tax"],
+        'life_tax': ["Life Tax", "Road Tax", "RTO", "Registration", "Govt Fee", "Regn Charges"],
+        'fastag': ["Fastag", "Fast Tag", "Tag Cost", "RFID"],
+        'temp_reg': ["Temp", "Temporary", "TR Charges", "Tmp Reg"],
+        
+        'insurance': ["Insurance", "Comprehensive", "OD Premium", "Bumper to Bumper", "Zero Dep", "Policy", "Ins Amount"],
+        'extended_warranty': ["Extended Warranty", "Ext Warranty", "EW", "Shield", "Protection Plan"],
+        'rsa': ["RSA", "Roadside", "Assistance", "Road Side"],
+        
+        'accessories': ["Accessories", "Kit", "Fitting", "Acc.", "Mud Flap", "Mats", "Basic Kit"],
+        'vas': ["VAS", "Value Added", "Coating", "Teflon", "Anti Rust"],
+        'others': ["Others", "Misc", "Handling", "Logistics", "Depot Charges", "H.C."],
+        
+        'on_road': ["On Road", "Total", "Net Amount", "Grand Total", "Final Price", "To Pay"]
+    }
+
+    def extract_value_smart(field_key):
+        """
+        1. Tries exact keywords.
+        2. Tries to find handwritten numbers near the keywords.
+        """
+        keywords = context_map.get(field_key, [])
+        
+        # Regex Explanation:
+        # (?: ... ) -> Match any of the keywords
+        # [^\d\n]* -> Allow spaces, colons, or dashes (but not new lines)
+        # ([\d,]+\.?\d*) -> Capture the number
+        pattern = rf"(?:{'|'.join(keywords)})[^\d\n]*([\d,]+\.?\d*)"
+        
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            raw_val = match.group(1).replace(",", "")
+            try:
+                return float(raw_val)
+            except:
+                return 0.0
+        return 0.0
+
+    # Run the extractor for all fields
+    for key in context_map:
+        data[key] = extract_value_smart(key)
+
+    return data
+
+def parse_gst_invoice(text):
+    data = {"type": "GST_INVOICE"}
     gst_match = re.search(r"\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}", text)
     data['gstin'] = gst_match.group(0) if gst_match else None
 
-    # Extract Account Number
     acc_match = re.search(r"(?:Account|Acc|A/c)[^0-9]*(\d{9,18})", text, re.IGNORECASE)
     data['account'] = acc_match.group(1) if acc_match else None
     
-    # Extract IFSC
     ifsc_match = re.search(r"[A-Z]{4}0[A-Z0-9]{6}", text)
     data['ifsc'] = ifsc_match.group(0) if ifsc_match else None
 
-    # Extract Amounts
     def find_amount(label):
         match = re.search(rf"{label}[^\d]*([\d,]+\.\d{{2}})", text, re.IGNORECASE)
         if match: return float(match.group(1).replace(",", ""))
@@ -118,21 +128,13 @@ def extract_details(text):
     data['cgst'] = find_amount("CGST")
     data['sgst'] = find_amount("SGST")
     data['igst'] = find_amount("IGST")
-    
     return data
 
-# --- 6. APP UI ---
-st.title("🧾 Invoice Validator Pro")
+# --- 5. UI & LOGIC ---
+st.title("🚗 Smart Quotation Scanner")
+st.write("Upload a **Car Quotation** OR a **GST Invoice**.")
 
-# SIDEBAR FOR KEYS
-with st.sidebar:
-    st.header("🔐 API Keys")
-    st.info("Get keys from razorpay.com")
-    razor_key = st.text_input("Razorpay Key ID", type="password")
-    razor_secret = st.text_input("Razorpay Key Secret", type="password")
-    has_keys = razor_key and razor_secret
-
-uploaded_file = st.file_uploader("Upload Invoice", type=["jpg", "png", "pdf"])
+uploaded_file = st.file_uploader("Upload File (PDF/Image)", type=["jpg", "png", "pdf"])
 
 if uploaded_file:
     if uploaded_file.type == "application/pdf":
@@ -140,50 +142,49 @@ if uploaded_file:
     else:
         st.image(uploaded_file, caption="Preview", width=300)
     
-    if st.button("🚀 Analyze & Verify"):
-        with st.spinner("Analyzing..."):
+    if st.button("🚀 Analyze Now"):
+        with st.spinner("🤖 AI is reading handwriting & detecting context..."):
             text = get_text_from_file(uploaded_file)
-            data = extract_details(text)
             
-            # --- DISPLAY RESULTS ---
-            st.divider()
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("GSTIN", data['gstin'] or "Missing")
-            col2.metric("Account No", data['account'] or "Missing")
-            col3.metric("IFSC Code", data['ifsc'] or "Missing")
-            col4.metric("Tax Type", "IGST" if data['igst'] > 0 else "Intra-State")
+            # --- AUTO-DETECT TYPE ---
+            # Check for Car Keywords
+            car_keywords = ["Ex-Showroom", "On Road", "Hypothecation", "RTO", "Variant", "Model"]
+            is_car = any(k.lower() in text.lower() for k in car_keywords)
 
-            # --- VERIFICATION SECTION ---
-            st.subheader("🏛️ Government Verification")
-            
-            if not has_keys:
-                st.warning("⚠️ Enter API Keys in the sidebar to verify this data.")
-            else:
-                # 1. VERIFY GST
-                if data['gstin']:
-                    st.write(f"Connecting to Government Database for **{data['gstin']}**...")
-                    gst_result = verify_gst_razorpay(data['gstin'], razor_key, razor_secret)
-                    
-                    if "error" in gst_result:
-                         st.error(f"API Error: {gst_result['error']}")
-                    elif gst_result.get("taxpayer_status") == "Active":
-                         st.success(f"✅ GSTIN VALID & ACTIVE")
-                         st.json(gst_result)
-                    else:
-                         st.error(f"❌ GSTIN STATUS: {gst_result.get('taxpayer_status', 'Unknown')}")
+            if is_car:
+                st.success("✅ Detected: New Car Quotation")
+                data = smart_parse_car_quotation(text)
                 
-                # 2. VERIFY BANK
-                st.divider()
-                st.subheader("🏦 Bank Verification")
-                if data['account'] and data['ifsc']:
-                    st.write(f"Verifying Account **{data['account']}**...")
-                    bank_result = verify_bank_razorpay(data['account'], data['ifsc'], razor_key, razor_secret)
-                    
-                    if "active" in str(bank_result):
-                         st.success("✅ BANK ACCOUNT EXISTS")
-                         st.write(f"**Registered Name:** {bank_result.get('fund_account', {}).get('bank_account', {}).get('name', 'N/A')}")
-                    else:
-                         st.error("❌ Bank Verification Failed")
-                         st.json(bank_result)
-                else:
-                    st.info("Need both Account Number and IFSC to verify bank details.")
+                # Metric Row
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Ex-Showroom", f"₹{data['ex_showroom']:,.2f}")
+                c2.metric("Road Tax (RTO)", f"₹{data['life_tax']:,.2f}")
+                c3.metric("On-Road Price", f"₹{data['on_road']:,.2f}", delta="Final")
+                
+                st.subheader("📋 Smart Cost Breakdown")
+                
+                # Use Tabs for cleaner look
+                tab1, tab2 = st.tabs(["Essential Costs", "Extras & Accessories"])
+                
+                with tab1:
+                    col1, col2 = st.columns(2)
+                    col1.text_input("Insurance (Zero Dep/Bumper)", value=f"₹{data['insurance']:,.2f}")
+                    col1.text_input("Extended Warranty (EW)", value=f"₹{data['extended_warranty']:,.2f}")
+                    col2.text_input("TCS (Tax Collected)", value=f"₹{data['tcs']:,.2f}")
+                    col2.text_input("Fastag / RFID", value=f"₹{data['fastag']:,.2f}")
+
+                with tab2:
+                    col1, col2 = st.columns(2)
+                    col1.text_input("Accessories / Kit", value=f"₹{data['accessories']:,.2f}")
+                    col1.text_input("Value Added Services (VAS)", value=f"₹{data['vas']:,.2f}")
+                    col2.text_input("Handling / Misc Charges", value=f"₹{data['others']:,.2f}")
+                    col2.text_input("Temp Registration", value=f"₹{data['temp_reg']:,.2f}")
+
+            else:
+                st.success("✅ Detected: GST Invoice")
+                data = parse_gst_invoice(text)
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("GSTIN", data['gstin'] or "Missing")
+                c2.metric("Account No", data['account'] or "Missing")
+                c3.metric("IFSC", data['ifsc'] or "Missing")
+                c4.metric("Tax Type", "IGST" if data['igst'] > 0 else "Intra-State")
