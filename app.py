@@ -49,8 +49,8 @@ def extract_text_from_file(uploaded_file):
 def analyze_with_gemini(text_content, api_key):
     genai.configure(api_key=api_key)
     
-    # 1. Use the Stable "Gemini Pro" Model (Available Everywhere)
-    model = genai.GenerativeModel('gemini-pro')
+    # UPDATED MODEL NAME BASED ON YOUR LOGS
+    model_name = 'models/gemini-2.0-flash' 
     
     prompt = f"""
     You are an expert financial document analyzer. Extract data from this text into a JSON object.
@@ -76,20 +76,13 @@ def analyze_with_gemini(text_content, api_key):
     """
     
     try:
+        model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
         
     except Exception as e:
-        # DIAGNOSTIC: If this fails, list what models ARE available
-        error_msg = f"Gemini Pro Failed: {str(e)}"
-        try:
-            st.warning("⚠️ Fetching available model list for debugging...")
-            available_models = [m.name for m in genai.list_models()]
-            error_msg += f"\n\nAVAILABLE MODELS FOR YOUR KEY: {available_models}"
-        except:
-            pass
-        return {"error": error_msg}
+        return {"error": f"Model Error ({model_name}): {str(e)}"}
 
 # --- 4. UI LAYOUT ---
 st.title("🧠 Smart Document Analyzer")
@@ -120,7 +113,7 @@ if uploaded_file and gemini_key:
         
         if "error" in data:
             st.error("Analysis Failed")
-            st.code(data['error']) # Show the detailed error + model list
+            st.code(data['error'])
         else:
             st.success(f"✅ Detected: {data.get('document_type', 'Unknown')}")
             
