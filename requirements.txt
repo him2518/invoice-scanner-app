@@ -2,3 +2,4 @@ streamlit
 google-cloud-vision
 pymupdf
 requests
+google-generativeai
