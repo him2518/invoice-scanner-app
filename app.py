@@ -50,7 +50,8 @@ def analyze_with_gemini(text_content, api_key):
     genai.configure(api_key=api_key)
     
     # UPDATED MODEL NAME BASED ON YOUR LOGS
-    model_name = 'models/gemini-2.0-flash' 
+     
+    model_name = 'models/gemini-1.5-flash'
     
     prompt = f"""
     You are an expert financial document analyzer. Extract data from this text into a JSON object.
